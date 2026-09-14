@@ -6,6 +6,20 @@ The standalone React interface has Reply and Import chat tabs. Import connects t
 
 ## Run in two VS Code PowerShell terminals
 
+After installing the dependencies below, restart both servers from the project root in a VS Code PowerShell terminal:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\restart-dev.ps1
+```
+
+To stop them only:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\restart-dev.ps1 -StopOnly
+```
+
+The script verifies checkout ownership before stopping processes, including stale Vite servers. It refuses to stop an unrelated or unverifiable listener on ports 8000/5173; stop such a server in its original terminal first. It installs nothing and leaves chat data intact. Startup waits up to 30 seconds per server (`-TimeoutSeconds 60` to extend). Logs are in ignored `.dev-runtime/`. Fixed ports match the local API's origin restrictions.
+
 Requires Node.js 20.19+ or 22.12+ and Python 3.11+. **No SQLite installation or server is needed**: Python includes sqlite3.
 
 Terminal 1 — backend:
