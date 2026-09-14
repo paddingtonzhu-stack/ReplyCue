@@ -522,3 +522,19 @@ textarea {
     animation: none !important;
   }
 }
+.history { min-width: 0; overflow-wrap: anywhere; }
+.history-info { margin: 18px 0; padding: 12px; background: #f2f4ee; border-radius: 10px; }
+.history summary { cursor: pointer; }
+.history-info p, .history .field-hint { line-height: 1.6; }
+.import-audit { border-top: 1px solid #d8ded5; padding: 12px 0; font-size: 13px; }
+.history-filters { margin: 18px 0; }
+.history-filters button { margin-top: 8px; }
+.timeline { list-style: none; margin: 16px 0; padding: 0; }
+.message { margin: 12px 0; padding: 14px; border-radius: 12px; background: #f3f1eb; border: 1px solid #dfdfd5; }
+.message.self { background: #e9f2eb; margin-left: 22px; }
+.message.contact { margin-right: 22px; }
+.message.event { background: #f6f6f3; border-style: dashed; color: #555e55; }
+.message small { display: block; margin-top: 4px; color: #657064; }
+.message-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+.event-label { display: block; font-size: 12px; margin-top: 8px; text-transform: capitalize; }
+.message details { font-size: 12px; }

@@ -3,7 +3,8 @@ import os
 from pathlib import Path
 import sqlite3
 
-from fastapi import FastAPI, File, Form, UploadFile, Request
+from fastapi import FastAPI, File, Form, UploadFile, Request, Query
+from typing import Literal
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -81,6 +82,19 @@ def create_app(db_path=None,provider=None):
 
     @app.get('/conversations')
     def conversations(request:Request):return request.app.state.store.conversations()
+
+    @app.get('/conversations/{conversation_id}')
+    def conversation_detail(request:Request,conversation_id:str):
+        from .history import detail
+        return detail(request.app.state.store,conversation_id)
+
+    @app.get('/conversations/{conversation_id}/messages')
+    def conversation_messages(request:Request,conversation_id:str,
+        offset:int=Query(0,ge=0),limit:int=Query(50,ge=1,le=200),order:Literal['asc','desc']='asc',
+        type:Literal['text','system','unknown','voice','image','video','audio','sticker','document','gif','call','deleted','encoded_image','encoded_audio','encoded_video','encoded_document','encoded_binary']|None=None,
+        rag:bool|None=None,q:str|None=Query(None,max_length=200)):
+        from .history import messages
+        return messages(request.app.state.store,conversation_id,offset,limit,order,type,rag,q)
 
     async def parse_upload(file,transcript_name):
         try:

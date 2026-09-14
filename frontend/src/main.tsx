@@ -22,11 +22,14 @@ import {
 } from "./demoService";
 import "./styles.css";
 import ImportChat from "./ImportChat";
+import History from "./History";
 
 // Import processing is isolated from the sample reply UI.
 
 function App() {
-  const [tab, setTab] = useState<"reply" | "import">("reply");
+  const tabs = ['reply', 'import', 'history'] as const;
+  const [tab, setTab] = useState<typeof tabs[number]>("reply");
+  const [historyRevision, setHistoryRevision] = useState(0);
   const [memory, setMemory] = useState(false),
     [more, setMore] = useState(false);
   const [intention, setIntention] = useState<Intention>("Reconnect");
@@ -63,7 +66,7 @@ function App() {
       );
     }
   }
-  function switchTab(next: "reply" | "import") {
+  function switchTab(next: typeof tabs[number]) {
     setTab(next);
   }
   return (
@@ -77,7 +80,7 @@ function App() {
           <span className="badge">Test space</span>
         </header>
         <div className="tabs" role="tablist" aria-label="ReplyCue tools">
-          {(["reply", "import"] as const).map((value) => (
+          {tabs.map((value) => (
             <button
               key={value}
               id={`${value}-tab`}
@@ -91,20 +94,14 @@ function App() {
                   ["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)
                 ) {
                   e.preventDefault();
-                  const next =
-                    e.key === "Home"
-                      ? "reply"
-                      : e.key === "End"
-                        ? "import"
-                        : tab === "reply"
-                          ? "import"
-                          : "reply";
+                  const next = e.key === 'Home' ? tabs[0] : e.key === 'End' ? tabs[2]
+                    : tabs[(tabs.indexOf(tab) + (e.key === 'ArrowRight' ? 1 : 2)) % tabs.length];
                   switchTab(next);
                   document.getElementById(`${next}-tab`)?.focus();
                 }
               }}
             >
-              {value === "reply" ? "Reply" : "Import chat"}
+              {value === "reply" ? "Reply" : value === 'import' ? "Import chat" : 'Conversations'}
             </button>
           ))}
         </div>
@@ -281,7 +278,10 @@ function App() {
           aria-labelledby="import-tab"
           hidden={tab !== "import"}
         >
-          <ImportChat onImported={setImported} />
+          <ImportChat onImported={name => {setImported(name);setHistoryRevision(n => n + 1);}} />
+        </div>
+        <div className="content" id="history-panel" role="tabpanel" aria-labelledby="history-tab" hidden={tab !== 'history'}>
+          <History revision={historyRevision} active={tab === 'history'}/>
         </div>
       </div>
       <p className="page-note">A little context. Your own words.</p>

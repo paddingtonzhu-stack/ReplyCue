@@ -9,6 +9,7 @@ import re
 import stat
 import unicodedata
 import zipfile
+from .encoded import encoded_kind
 
 MAX_ZIP = 10 * 1024 * 1024
 MAX_TEXT = 5 * 1024 * 1024
@@ -62,6 +63,8 @@ def normalize(text):
 
 
 def classify(text, sender):
+    encoded=encoded_kind(text)
+    if encoded:return encoded
     value = text.strip().casefold()
     if value in ('[call]', '- [call]') or re.fullmatch(r'(?:missed )?(?:voice|video) call(?:,.*)?', value):
         return 'call'

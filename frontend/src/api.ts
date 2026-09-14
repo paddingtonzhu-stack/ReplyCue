@@ -29,7 +29,29 @@ export interface Conversation {
   normalized_phone: string | null;
   timezone: string;
   message_count: number;
+  rag_count: number;
+  first_timestamp: string | null;
+  last_timestamp: string | null;
+  chunk_count: number;
+  embedding_count: number;
+  latest_import_time: string | null;
+  latest_import_status: string | null;
 }
+export interface ConversationDetail extends Conversation {
+  participants: { alias: string; role: 'self' | 'contact' }[];
+  type_counts: Record<string, number>;
+  import_count: number;
+  imports: { created_at: string; status: string; added_count: number; parsed_count: number | null;
+    skipped_count: number | null; warnings: string[] | null }[];
+  embedding_providers: { provider: string; dimensions: number; count: number }[];
+}
+export interface ChatMessage {
+  id: string; original_text: string; original_timestamp: string | null;
+  local_datetime: string | null; utc_datetime: string | null; timezone: string;
+  type: string; include_in_rag: boolean; line_start: number; line_end: number;
+  source_order: number; alias: string | null; role: 'self' | 'contact' | null;
+}
+export interface MessagePage { items: ChatMessage[]; total: number; next_offset: number | null }
 export interface SavedImport {
   display_name: string;
   normalized_phone: string | null;

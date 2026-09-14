@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .embeddings import DevelopmentEmbedding, cosine
 from .parser import ImportProblem, normalize
+from .encoded import encoded_kind, KINDS
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS schema_version(version INTEGER PRIMARY KEY);
@@ -43,6 +44,14 @@ CREATE TABLE IF NOT EXISTS embeddings(chunk_id TEXT PRIMARY KEY REFERENCES chunk
 CREATE INDEX IF NOT EXISTS messages_conversation_time ON messages(conversation_id,utc_datetime,source_order);
 CREATE INDEX IF NOT EXISTS chunks_scope ON chunks(contact_id,conversation_id);
 CREATE INDEX IF NOT EXISTS imports_conversation ON imports(conversation_id);
+CREATE TABLE IF NOT EXISTS import_details(import_id TEXT PRIMARY KEY REFERENCES imports(id),
+ parsed_count INTEGER NOT NULL, skipped_count INTEGER NOT NULL, warnings_json TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS messages_page ON messages(conversation_id,utc_datetime,source_order,id);
+CREATE INDEX IF NOT EXISTS messages_type_page ON messages(conversation_id,type,utc_datetime,source_order,id);
+CREATE INDEX IF NOT EXISTS messages_rag_page ON messages(conversation_id,include_in_rag,utc_datetime,source_order,id);
+CREATE INDEX IF NOT EXISTS chunks_conversation ON chunks(conversation_id);
+CREATE INDEX IF NOT EXISTS imports_latest ON imports(conversation_id,created_at DESC,id DESC);
+INSERT OR IGNORE INTO schema_version VALUES(2);
 '''
 
 
@@ -79,6 +88,24 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
             db.executescript(SCHEMA)
+        self._filter_encoded_history()
+
+    def _filter_encoded_history(self):
+        # Re-check text rows to cover imports made by older app versions. Preserve
+        # fingerprints/IDs and audits so repeat imports still match their sources.
+        with self.connection() as db:
+            with db:
+                db.execute('BEGIN IMMEDIATE')
+                affected={}
+                rows=db.execute("SELECT id,conversation_id,contact_id,original_text FROM messages WHERE type IN ('text','unknown') AND length(original_text)>=256")
+                for row in rows:
+                    kind=encoded_kind(row['original_text'])
+                    if kind:
+                        db.execute('UPDATE messages SET type=?,normalized_text=?,include_in_rag=0 WHERE id=?',(kind,'',row['id']))
+                        affected[row['conversation_id']]=row['contact_id']
+                for conversation_id,contact_id in affected.items():
+                    self._rebuild_chunks(db,conversation_id,contact_id)
+                db.execute('INSERT OR IGNORE INTO schema_version VALUES(3)')
 
     @contextmanager
     def connection(self):
@@ -91,10 +118,8 @@ class Store:
             db.close()
 
     def conversations(self):
-        with self.connection() as db:
-            return [dict(r) for r in db.execute('''SELECT v.id, v.contact_id, c.display_name, c.normalized_phone, v.timezone,
-                (SELECT COUNT(*) FROM messages m WHERE m.conversation_id=v.id) AS message_count
-                FROM conversations v JOIN contacts c ON c.id=v.contact_id ORDER BY v.created_at,v.id''')]
+        from .history import summaries
+        return summaries(self)
 
     def import_chat(self, parsed, display_name, self_alias, contact_alias, tz_name, conversation_id=None, phone=None):
         normalized_phone = normalize_phone(phone)
@@ -143,7 +168,11 @@ class Store:
                             if warning not in warnings: warnings.append(warning)
                         utc = aware.astimezone(timezone.utc).isoformat()
                     normalized = normalize(msg.text)
-                    fingerprint = sha256(json.dumps([msg.sender,msg.timestamp,normalized,msg.kind],ensure_ascii=False).encode()).hexdigest()
+                    # Encoded files formerly appeared as text. Keep that fingerprint
+                    # contract while removing payloads from the search representation.
+                    fingerprint_kind = ('text' if msg.sender is not None else 'unknown') if msg.kind in KINDS else msg.kind
+                    fingerprint = sha256(json.dumps([msg.sender,msg.timestamp,normalized,fingerprint_kind],ensure_ascii=False).encode()).hexdigest()
+                    if msg.kind in KINDS:normalized=''
                     occurrence = occurrences[fingerprint]
                     occurrences[fingerprint] += 1
                     message_id = sha256(f'{conversation_id}:{fingerprint}:{occurrence}'.encode()).hexdigest()
@@ -154,6 +183,8 @@ class Store:
                 if added:
                     self._rebuild_chunks(db, conversation_id, contact_id)
                 db.execute("UPDATE imports SET status='complete',added_count=? WHERE id=?",(added,import_id))
+                db.execute('INSERT INTO import_details VALUES(?,?,?,?)',
+                           (import_id,len(parsed.messages),len(parsed.messages)-added,json.dumps(warnings)))
                 chunks = db.execute('SELECT COUNT(*) FROM chunks WHERE conversation_id=?',(conversation_id,)).fetchone()[0]
                 embeddings = db.execute('SELECT COUNT(*) FROM embeddings e JOIN chunks c ON c.id=e.chunk_id WHERE c.conversation_id=?',(conversation_id,)).fetchone()[0]
                 contact = db.execute('SELECT display_name,normalized_phone FROM contacts WHERE id=?',(contact_id,)).fetchone()

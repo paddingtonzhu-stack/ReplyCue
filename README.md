@@ -2,7 +2,7 @@
 
 Remember where you left off and find the words to reply like yourself.
 
-The standalone React interface has Reply and Import chat tabs. Import connects to local FastAPI and SQLite; Reply suggestions and insertion remain sample/demo features.
+The standalone React interface has Reply, Import chat and Conversations tabs. Import and Conversations connect to local FastAPI and SQLite; Reply suggestions and insertion remain sample/demo features.
 
 ## Run in two VS Code PowerShell terminals
 
@@ -56,7 +56,25 @@ Copy frontend/.env.example to frontend/.env to change VITE_API_BASE_URL (default
 
 Only two-alias direct chats in the supported timestamp format are accepted. ZIPs are bounded, read without extraction and discarded after requests. No private exports are part of this project.
 
-## Reply and retrieval
+## Browse saved conversations
+
+Open **Conversations**, select a saved name, and read the chronological timeline. Names use an explicitly saved phone when available, with date/count metadata to distinguish conversations. Search saved text or filter by message type; **Load more messages** fetches the next 50 records. Tab switching keeps the current selection and pages. **Refresh** reloads saved information, and successful imports refresh the view automatically.
+
+Expand **Conversation and import information** for confirmed aliases, timezone, record/type counts, retrieval eligibility, chunk/embedding counts and the latest 50 import audit summaries. Expand a message's **Parsing details** for source lines and classification. Original multiline text and emojis are preserved; media omissions, calls, deleted messages and system records are labelled as events. Vectors and internal fingerprints are never sent to this view.
+
+Old databases upgrade automatically with additive tables/indexes; no SQLite installation is required. Older imports show unknown parsed/skipped counts and unavailable warnings because those fields were not originally saved. The database remains local and Git-ignored. Reply suggestions still use the separate sample history.
+
+Recognized long Base64 files and Base64 data URIs are shown as compact **Encoded image/audio/video/document/binary omitted** events. Strict decoding plus known file signatures prevents ordinary long text or short tokens from being treated as media. Original payload text stays in local SQLite for audit, but is excluded from search, chunks, embeddings and normal message API responses. Startup cleanup also reclassifies older matching text records and rebuilds only affected conversations transactionally; it does not delete the original text or import audits.
+
+Read APIs (also available in the local `/docs`):
+
+- `GET /conversations`: saved summaries, dates, counts and latest import status.
+- `GET /conversations/{conversation_id}`: aliases, type/retrieval counts, embedding metadata and recent import audits.
+- `GET /conversations/{conversation_id}/messages?offset=0&limit=50`: original message page; optional `order=asc|desc`, `type`, `rag=true|false`, and literal substring `q` (up to 200 characters). Limit is at most 200. Unknown conversations return 404; invalid filters return 422. IDs are API routing values, not display labels.
+
+Pages use deterministic time/source-order/ID ordering, with undated events first in ascending order. Offset pages reflect current storage; refresh from the first page after imports in another window to avoid shifts. Substring search scans matching conversation text in SQLite; only the requested page is loaded into Python. Counts cover metadata records as well as substantive messages.
+
+## Reply and retrieval behavior
 
 Reply retains fictional sample memory, intentions, regeneration, editing, copy and persistent insertion confirmation. Imports do not yet generate replies or replace the sample memory card. Insert reply neither sends nor inserts into WhatsApp.
 
