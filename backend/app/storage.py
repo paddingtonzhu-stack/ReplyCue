@@ -82,9 +82,11 @@ def normalize_phone(value):
 
 
 class Store:
-    def __init__(self, path, provider=None):
+    def __init__(self, path, provider=None, rag_message_threshold=80, rag_character_threshold=24000):
         self.path = Path(path)
         self.provider = provider or DevelopmentEmbedding()
+        self.rag_message_threshold = rag_message_threshold
+        self.rag_character_threshold = rag_character_threshold
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
             db.executescript(SCHEMA)
@@ -194,9 +196,9 @@ class Store:
                             chunk_count=chunks,embedding_count=embeddings,provider=self.provider.name,warnings=warnings)
 
     def _rebuild_chunks(self,db,conversation_id,contact_id):
-        db.execute('DELETE FROM chunks WHERE conversation_id=?',(conversation_id,))
         rows = db.execute('''SELECT m.*,p.role FROM messages m JOIN participants p ON p.id=m.sender_id
             WHERE m.conversation_id=? AND include_in_rag=1 ORDER BY m.utc_datetime,m.source_order,m.id''',(conversation_id,)).fetchall()
+        groups=[]
         group, chars, last, chunk_number = [], 0, None, 0
         def flush():
             nonlocal chunk_number
@@ -205,12 +207,7 @@ class Store:
             ids = list(dict.fromkeys(item[0] for item in group))
             chunk_id = sha256((conversation_id+'|'+str(chunk_number)+'|'+json.dumps(ids)+'|'+text).encode()).hexdigest()
             chunk_number += 1
-            db.execute('INSERT INTO chunks VALUES(?,?,?,?,?,?)',(chunk_id,conversation_id,contact_id,text,ids[0],ids[-1]))
-            db.executemany('INSERT INTO chunk_messages VALUES(?,?,?)',[(chunk_id,message_id,n) for n,message_id in enumerate(ids)])
-            vector = self.provider.embed(text)
-            if len(vector)!=self.provider.dimensions or not all(math.isfinite(v) for v in vector):
-                raise ValueError('Embedding provider dimension mismatch')
-            db.execute('INSERT INTO embeddings VALUES(?,?,?,?)',(chunk_id,self.provider.name,len(vector),json.dumps(vector)))
+            groups.append((chunk_id,text,ids))
         for row in rows:
             moment = datetime.fromisoformat(row['utc_datetime'])
             # Split very long messages without altering stored original text.
@@ -221,7 +218,69 @@ class Store:
                 group.append((row['id'],part));chars+=len(part)+1;last=moment
         flush()
 
-    def retrieve(self,contact_id,conversation_id,query,top_k):
+        existing={r['id']:r for r in db.execute('''SELECT c.id,e.provider,e.dimensions FROM chunks c
+            LEFT JOIN embeddings e ON e.chunk_id=c.id WHERE c.conversation_id=?''',(conversation_id,))}
+        new_ids={item[0] for item in groups}
+        for chunk_id in set(existing)-new_ids:
+            db.execute('DELETE FROM chunks WHERE id=?',(chunk_id,))
+        for chunk_id,text,ids in groups:
+            if chunk_id not in existing:
+                db.execute('INSERT INTO chunks VALUES(?,?,?,?,?,?)',(chunk_id,conversation_id,contact_id,text,ids[0],ids[-1]))
+                db.executemany('INSERT INTO chunk_messages VALUES(?,?,?)',[(chunk_id,message_id,n) for n,message_id in enumerate(ids)])
+            current=existing.get(chunk_id)
+            needs_embedding = (
+                current is None or current['provider'] != self.provider.name or current['dimensions'] != self.provider.dimensions
+            )
+            if needs_embedding:
+                vector = self.provider.embed(text)
+                if len(vector)!=self.provider.dimensions or not all(math.isfinite(v) for v in vector):
+                    raise ValueError('Embedding provider dimension mismatch')
+                db.execute('INSERT OR REPLACE INTO embeddings VALUES(?,?,?,?)',(chunk_id,self.provider.name,len(vector),json.dumps(vector)))
+
+    def conversation_stats(self, conversation_id, contact_id=None):
+        with self.connection() as db:
+            values=[conversation_id]
+            scope='v.id=?'
+            if contact_id is not None:
+                scope+=' AND v.contact_id=?';values.append(contact_id)
+            row=db.execute('''SELECT COUNT(m.id) message_count,
+                COALESCE(SUM(CASE WHEN m.include_in_rag=1 THEN 1 ELSE 0 END),0) eligible_message_count,
+                COALESCE(SUM(CASE WHEN m.include_in_rag=1 THEN length(m.original_text) ELSE 0 END),0) eligible_character_count
+                FROM conversations v LEFT JOIN messages m ON m.conversation_id=v.id WHERE '''+scope,values).fetchone()
+            exists=db.execute('SELECT 1 FROM conversations v WHERE '+scope,values).fetchone()
+            if not exists:
+                raise ImportProblem('scope_missing','Contact/conversation scope not found.',404)
+            return dict(row)
+
+    def context_messages(self, conversation_id, limit):
+        with self.connection() as db:
+            if not db.execute('SELECT 1 FROM conversations WHERE id=?',(conversation_id,)).fetchone():
+                raise ImportProblem('conversation_missing','Conversation not found.',404)
+            rows=db.execute('''SELECT p.role,m.original_text text FROM messages m
+                JOIN participants p ON p.id=m.sender_id WHERE m.conversation_id=? AND m.include_in_rag=1
+                ORDER BY m.utc_datetime DESC,m.source_order DESC,m.id DESC LIMIT ?''',(conversation_id,limit)).fetchall()
+            return [dict(row) for row in reversed(rows)]
+
+    def ensure_index(self, conversation_id, contact_id):
+        self.conversation_stats(conversation_id,contact_id)
+        with self.connection() as db:
+            with db:
+                db.execute('BEGIN IMMEDIATE')
+                rows=db.execute('''SELECT c.id,c.text,e.provider,e.dimensions FROM chunks c
+                    LEFT JOIN embeddings e ON e.chunk_id=c.id WHERE c.conversation_id=?''',(conversation_id,)).fetchall()
+                for row in rows:
+                    if row['provider']==self.provider.name and row['dimensions']==self.provider.dimensions:
+                        continue
+                    vector=self.provider.embed(row['text'])
+                    if len(vector)!=self.provider.dimensions or not all(math.isfinite(v) for v in vector):
+                        raise ValueError('Embedding provider dimension mismatch')
+                    db.execute('INSERT OR REPLACE INTO embeddings VALUES(?,?,?,?)',
+                               (row['id'],self.provider.name,len(vector),json.dumps(vector)))
+        return True
+
+    def retrieve(self,contact_id,conversation_id,query,top_k,ensure_index=True):
+        if ensure_index:
+            self.ensure_index(conversation_id,contact_id)
         vector = self.provider.embed(query)
         with self.connection() as db:
             if not db.execute('SELECT 1 FROM conversations WHERE id=? AND contact_id=?',(conversation_id,contact_id)).fetchone():
@@ -235,4 +294,6 @@ class Store:
                 sources=[dict(r) for r in db.execute('''SELECT m.id,m.line_start,m.line_end,m.import_id,m.original_timestamp
                     FROM chunk_messages cm JOIN messages m ON m.id=cm.message_id WHERE cm.chunk_id=? ORDER BY cm.ordinal''',(row['id'],))]
                 results.append(dict(chunk_id=row['id'],score=score,text=row['text'],sources=sources))
-            return dict(provider=self.provider.name,quality='Development lexical feature hashing; not semantic search.',results=results)
+            quality = ('Semantic OpenAI embeddings.' if self.provider.name.startswith('openai:')
+                       else 'Development lexical feature hashing; not semantic search.')
+            return dict(provider=self.provider.name,quality=quality,results=results)

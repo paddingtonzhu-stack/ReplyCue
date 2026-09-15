@@ -13,6 +13,10 @@ from starlette.concurrency import run_in_threadpool
 
 from .parser import read_export, ImportProblem, MAX_ZIP
 from .storage import Store
+from .config import Settings
+from .embeddings import DevelopmentEmbedding, OpenAIEmbedding
+from .ai import OpenAIReplyGenerator
+from .reply_graph import ReplyWorkflow
 
 LOCAL_ORIGINS = ['http://localhost:5173','http://127.0.0.1:5173']
 
@@ -52,11 +56,23 @@ class RetrievalRequest(BaseModel):
     top_k: int = Field(default=5,ge=1,le=20)
 
 
-def create_app(db_path=None,provider=None):
+class ReplyRequest(BaseModel):
+    contact_id: str = Field(min_length=1,max_length=100)
+    incoming_message: str = Field(min_length=1,max_length=4000)
+    intent: str | None = Field(default=None,max_length=500)
+
+
+def create_app(db_path=None,provider=None,settings=None,generator=None):
+    settings = settings or Settings.load()
+    if provider is None:
+        provider = (OpenAIEmbedding(settings.openai_api_key,settings.embedding_model,settings.embedding_dimensions)
+                    if settings.openai_api_key else DevelopmentEmbedding())
+    generator = generator or OpenAIReplyGenerator(settings.openai_api_key,settings.chat_model)
     path = db_path or os.environ.get('REPLYCUE_DB_PATH') or Path(__file__).resolve().parents[1]/'data'/'replycue.sqlite3'
     @asynccontextmanager
     async def lifespan(app):
-        app.state.store=Store(path,provider)
+        app.state.store=Store(path,provider,settings.rag_message_threshold,settings.rag_character_threshold)
+        app.state.reply_workflow=ReplyWorkflow(app.state.store,generator,settings)
         yield
     app=FastAPI(title='ReplyCue local API',lifespan=lifespan)
     app.add_middleware(BoundedRequests)
@@ -78,7 +94,10 @@ def create_app(db_path=None,provider=None):
     @app.get('/health')
     def health(request:Request):
         with request.app.state.store.connection() as db:db.execute('SELECT 1')
-        return {'status':'ok','storage':'SQLite','embedding_provider':request.app.state.store.provider.name}
+        return {'status':'ok','storage':'SQLite','embedding_provider':request.app.state.store.provider.name,
+                'openai_configured':generator.configured,'chat_model':settings.chat_model,
+                'rag_message_threshold':settings.rag_message_threshold,
+                'rag_character_threshold':settings.rag_character_threshold}
 
     @app.get('/conversations')
     def conversations(request:Request):return request.app.state.store.conversations()
@@ -122,6 +141,15 @@ def create_app(db_path=None,provider=None):
     def retrieve(request:Request,body:RetrievalRequest):
         if not body.query.strip():raise ImportProblem('query','Enter a search query.')
         return request.app.state.store.retrieve(body.contact_id,body.conversation_id,body.query,body.top_k)
+
+    @app.post('/conversations/{conversation_id}/reply-suggestions')
+    async def reply_suggestions(request:Request,conversation_id:str,body:ReplyRequest):
+        if not body.incoming_message.strip():
+            raise ImportProblem('incoming_message','Enter the message you want to answer.')
+        return await run_in_threadpool(
+            request.app.state.reply_workflow.invoke,
+            conversation_id,body.contact_id,body.incoming_message.strip(),body.intent.strip() if body.intent else None,
+        )
     return app
 
 

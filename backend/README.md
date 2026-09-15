@@ -8,6 +8,8 @@ FastAPI and Python standard-library `sqlite3`. **No separate SQLite installation
 cd D:\research\project\ReplyCue\backend
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
+# Open .env and replace your-key-here with your OpenAI API key.
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -37,6 +39,7 @@ Tests use synthetic in-memory ZIPs and temporary databases only.
 - `POST /imports/preview`: multipart `file` ZIP and optional `transcript_name`. Returns aliases, record/type counts, local timestamp range, warnings, and transcript hash; no message bodies and no saved rows.
 - `POST /imports/confirm`: multipart `file`, `transcript_name`, preview `transcript_hash`, `display_name`, `self_alias`, `contact_alias`, `timezone`, optional existing `conversation_id` and optional `phone`. Phone numbers are explicitly user-provided, never inferred from filenames or aliases. Spaces, parentheses, dots and hyphens are removed; 3–15 digits and an optional leading + are accepted without guessing a country. A supplied number updates the selected contact transactionally; omitted/blank phone preserves an existing number. Two-alias direct chats only. Select an existing conversation to deduplicate a full export.
 - `POST /retrieve`: JSON `contact_id`, `conversation_id`, `query`, optional `top_k` (1–20). Returns scoped chunk text/scores and source message IDs, line ranges and import IDs.
+- `POST /conversations/{conversation_id}/reply-suggestions`: JSON `contact_id`, `incoming_message`, and optional `intent`. A LangGraph workflow inspects the conversation, chooses direct context for short chats or RAG for long chats, and returns three reply suggestions plus `route`, counts, and retrieval source IDs.
 
 This is a single-user local API without account authentication. Keep it bound to loopback; CORS allows only localhost/127.0.0.1 on port 5173, and other Origin headers are rejected. Do not expose it to a LAN/public host without deployment authentication and security.
 
@@ -62,6 +65,8 @@ Original payloads remain only in local `messages.original_text` for audit. Histo
 
 Stable IDs combine conversation, alias/timestamp/type/normalized-content fingerprint and occurrence index. Full-history reimports skip known occurrences while retaining identical same-second messages. Partial exports missing indistinguishable duplicates cannot reliably identify those occurrences; prefer full exports. Source lines refer to the message's initial import.
 
-Only substantive text enters chunks. Omitted voice/image/video/audio/sticker/document/GIF, calls, deleted tombstones, system and unknown placeholders remain metadata (`include_in_rag=0`). Chronological chunks contain at most 12 segments/1,800 characters with six-hour gap boundaries. Long text splits into source-linked segments. Only the updated conversation's chunks are rebuilt, atomically.
+Only substantive text enters chunks. Omitted voice/image/video/audio/sticker/document/GIF, calls, deleted tombstones, system and unknown placeholders remain metadata (`include_in_rag=0`). Chronological chunks contain at most 12 segments/1,800 characters with six-hour gap boundaries. Long text splits into source-linked segments. Every eligible chunk is vectored during import, including short conversations. Unchanged chunks keep their vectors on incremental reimport; only changed/new chunks are embedded.
 
-`DevelopmentEmbedding` uses deterministic 128-dimensional lexical feature hashing and cosine ranking, **not semantic AI**. The provider protocol can be replaced later; vectors record provider/dimensions and retrieval filters to the active provider. A provider change requires reindexing. No keys or external model calls are used.
+With `OPENAI_API_KEY` in `backend/.env`, ReplyCue uses `text-embedding-3-small` by default and stores its vectors in the existing SQLite `embeddings` table. There is no separate vector database or SQLite installation. Without a key, imports use deterministic development vectors so the import/history features still run, while reply generation returns a clear configuration error. The real `.env` is Git-ignored; only `.env.example` is committed.
+
+The LangGraph route is controlled by `RAG_MESSAGE_THRESHOLD` (default 80 eligible messages) or `RAG_CHARACTER_THRESHOLD` (default 24,000 eligible characters). Short chats pass their recent stored messages directly to the model. Long chats combine recent messages with the top matching SQLite chunks. Changing embedding provider/model causes missing or mismatched vectors to be rebuilt before retrieval.
